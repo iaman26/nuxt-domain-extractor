@@ -57,6 +57,36 @@
       >
         Dừng tải
       </button>
+      <div
+        v-if="isBatchLoading || batchMessage || currentCallingUrl"
+        class="status-panel fadein"
+      >
+        <div v-if="isBatchLoading" class="status-section">
+          <div class="status-icon">🔄</div>
+          <div class="status-content">
+            <div class="status-title">Tiến độ</div>
+            <div class="status-detail">
+              Đang tải batch {{ currentBatchNumber }}/{{ batchSize }}
+            </div>
+          </div>
+        </div>
+        <div v-if="currentCallingUrl" class="status-section">
+          <div class="status-icon">🔗</div>
+          <div class="status-content">
+            <div class="status-title">URL đang tải</div>
+            <div class="status-detail url-text">{{ currentCallingUrl }}</div>
+          </div>
+        </div>
+        <div v-if="batchMessage" class="status-section">
+          <div class="status-icon">
+            {{ batchMessage.includes("thành công") ? "✅" : "ℹ️" }}
+          </div>
+          <div class="status-content">
+            <div class="status-title">Kết quả</div>
+            <div class="status-detail">{{ batchMessage }}</div>
+          </div>
+        </div>
+      </div>
       <transition name="fade">
         <div v-if="lastBatchEndUrl" class="last-url-group">
           <label class="last-url-label">
@@ -65,6 +95,13 @@
           <div class="last-url-row">
             <input :value="lastBatchEndUrl" readonly class="last-url-input" />
             <button @click="copyLastUrl" class="last-url-copy">Copy</button>
+            <button
+              @click="clearLastUrl"
+              class="last-url-clear"
+              title="Xóa URL"
+            >
+              🗑️
+            </button>
           </div>
         </div>
       </transition>
@@ -90,7 +127,13 @@ const autoDownload = ref(false);
 let autoDownloadTimer = null;
 const isBatchLoading = ref(false);
 const lastBatchEndUrl = ref("");
+if (process.client) {
+  lastBatchEndUrl.value = localStorage.getItem("lastBatchEndUrl") || "";
+}
 const batchSize = ref(1);
+const currentBatchNumber = ref(0);
+const batchMessage = ref("");
+const currentCallingUrl = ref("");
 
 const whitelist = [
   ".uk.com",
@@ -160,15 +203,21 @@ async function fetchNextPage(inputUrl) {
 async function downloadNextBatch() {
   if (isBatchLoading.value || !nextPageUrl.value || autoDownload.value) return;
   isBatchLoading.value = true;
+  currentBatchNumber.value = 0;
+  batchMessage.value = "";
+  currentCallingUrl.value = "";
   let batch = 0;
   let htmls = [store.data];
   let next = nextPageUrl.value;
   let lastUrl = url.value.startsWith("@") ? url.value.slice(1) : url.value;
   let lastFetchedUrl = lastUrl;
+
   while (next && batch < batchSize.value - 1) {
+    currentBatchNumber.value = batch + 1;
     const nextUrl = next.startsWith("http")
       ? next
       : new URL(next, lastUrl).href;
+    currentCallingUrl.value = nextUrl;
     const res = await fetch(`/api/proxy?url=${encodeURIComponent(nextUrl)}`);
     const data = await res.json();
     htmls.push(data.html);
@@ -178,6 +227,10 @@ async function downloadNextBatch() {
     batch++;
   }
   lastBatchEndUrl.value = lastFetchedUrl;
+  if (process.client) {
+    localStorage.setItem("lastBatchEndUrl", lastFetchedUrl);
+  }
+
   let allDomains = htmls.flatMap(extractDomainsFromHtml);
   allDomains = Array.from(new Set(allDomains));
   if (allDomains.length) {
@@ -189,6 +242,9 @@ async function downloadNextBatch() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    batchMessage.value = `Đã tìm thấy ${allDomains.length} domain và xuất file CSV thành công`;
+  } else {
+    batchMessage.value = "Không tìm thấy domain nào trong các trang vừa tải";
   }
   nextPageUrl.value = next
     ? next.startsWith("http")
@@ -196,26 +252,35 @@ async function downloadNextBatch() {
       : new URL(next, lastUrl).href
     : null;
   isBatchLoading.value = false;
+  currentBatchNumber.value = 0;
+  currentCallingUrl.value = "";
 }
 
 async function autoDownloadNextPages() {
   if (isBatchLoading.value || !autoDownload.value || !nextPageUrl.value) return;
   isBatchLoading.value = true;
+  currentBatchNumber.value = 0;
+  batchMessage.value = "";
+  currentCallingUrl.value = "";
   let batch = 0;
   let htmls = [store.data];
   let next = nextPageUrl.value;
   let lastUrl = url.value.startsWith("@") ? url.value.slice(1) : url.value;
   let lastFetchedUrl = lastUrl;
-  while (next && batch < batchSize.value - 1) {
+
+  while (next && batch < batchSize.value) {
     if (!autoDownload.value) {
       store.data = null;
       nextPageUrl.value = null;
       url.value = "";
+      currentCallingUrl.value = "";
       break;
     }
+    currentBatchNumber.value = batch + 1;
     const nextUrl = next.startsWith("http")
       ? next
       : new URL(next, lastUrl).href;
+    currentCallingUrl.value = nextUrl;
     const res = await fetch(`/api/proxy?url=${encodeURIComponent(nextUrl)}`);
     const data = await res.json();
     htmls.push(data.html);
@@ -225,6 +290,10 @@ async function autoDownloadNextPages() {
     batch++;
   }
   lastBatchEndUrl.value = lastFetchedUrl;
+  if (process.client) {
+    localStorage.setItem("lastBatchEndUrl", lastFetchedUrl);
+  }
+
   let allDomains = htmls.flatMap(extractDomainsFromHtml);
   allDomains = Array.from(new Set(allDomains));
   if (allDomains.length && autoDownload.value) {
@@ -236,6 +305,9 @@ async function autoDownloadNextPages() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    batchMessage.value = `Đã tìm thấy ${allDomains.length} domain và xuất file CSV thành công`;
+  } else if (!allDomains.length) {
+    batchMessage.value = "Không tìm thấy domain nào trong các trang vừa tải";
   }
   nextPageUrl.value = next
     ? next.startsWith("http")
@@ -243,6 +315,8 @@ async function autoDownloadNextPages() {
       : new URL(next, lastUrl).href
     : null;
   isBatchLoading.value = false;
+  currentBatchNumber.value = 0;
+  currentCallingUrl.value = "";
   if (autoDownload.value && nextPageUrl.value) {
     autoDownloadTimer = setTimeout(autoDownloadNextPages, 1000);
   }
@@ -258,6 +332,13 @@ function stopAutoDownload() {
   store.data = null;
   nextPageUrl.value = null;
   url.value = "";
+}
+
+function clearLastUrl() {
+  lastBatchEndUrl.value = "";
+  if (process.client) {
+    localStorage.removeItem("lastBatchEndUrl");
+  }
 }
 
 function copyLastUrl() {
@@ -385,6 +466,10 @@ body {
   color: #d32f2f;
   background: #fff0f0;
 }
+.result.batch-message {
+  color: #059669;
+  background: #ecfdf5;
+}
 .fadein {
   animation: fadeIn 1.2s;
 }
@@ -479,6 +564,21 @@ body {
   background: linear-gradient(90deg, #38bdf8 0%, #6366f1 100%);
   transform: translateY(-2px) scale(1.04);
 }
+.last-url-clear {
+  padding: 10px 18px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #d32f2f 0%, #f87171 100%);
+  color: #fff;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  font-size: 1.02rem;
+  transition: background 0.2s, transform 0.15s;
+}
+.last-url-clear:hover {
+  background: linear-gradient(90deg, #f87171 0%, #d32f2f 100%);
+  transform: translateY(-2px) scale(1.04);
+}
 @media (max-width: 600px) {
   .main-content {
     padding: 18px 4px 16px 4px;
@@ -525,6 +625,89 @@ body {
   to {
     opacity: 1;
     transform: none;
+  }
+}
+.status-panel {
+  margin-top: 12px;
+  padding: 16px;
+  border-radius: 12px;
+  background: #f8fafc;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.08);
+  max-width: 540px;
+  width: 100%;
+  border: 1px solid #e2e8f0;
+}
+.status-section {
+  display: flex;
+  align-items: flex-start;
+  padding: 12px;
+  margin-bottom: 8px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  transition: all 0.2s ease;
+}
+.status-section:last-child {
+  margin-bottom: 0;
+}
+.status-section:hover {
+  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.12);
+  transform: translateY(-1px);
+}
+.status-icon {
+  font-size: 1.4em;
+  margin-right: 12px;
+  min-width: 24px;
+  text-align: center;
+}
+.status-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.status-title {
+  font-weight: 600;
+  color: #2d3a4a;
+  margin-bottom: 4px;
+  font-size: 0.95rem;
+}
+.status-detail {
+  font-size: 1rem;
+  color: #4a5568;
+  line-height: 1.4;
+}
+.url-text {
+  word-break: break-all;
+  color: #2563eb;
+  font-family: monospace;
+  font-size: 0.95rem;
+  background: #f1f5f9;
+  padding: 4px 8px;
+  border-radius: 4px;
+  margin-top: 2px;
+}
+
+@media (max-width: 600px) {
+  .status-panel {
+    margin: 12px 8px;
+    padding: 12px;
+  }
+  .status-section {
+    padding: 10px;
+  }
+  .status-icon {
+    font-size: 1.2em;
+    margin-right: 10px;
+  }
+  .status-title {
+    font-size: 0.9rem;
+  }
+  .status-detail {
+    font-size: 0.95rem;
+  }
+  .url-text {
+    font-size: 0.9rem;
+    padding: 3px 6px;
   }
 }
 </style>
