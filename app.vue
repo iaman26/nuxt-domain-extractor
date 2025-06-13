@@ -181,7 +181,7 @@ async function downloadNextBatch() {
   let allDomains = htmls.flatMap(extractDomainsFromHtml);
   allDomains = Array.from(new Set(allDomains));
   if (allDomains.length) {
-    const csvContent = "domain\n" + allDomains.join("\n");
+    const csvContent = allDomains.join("\n");
     const blob = new Blob([csvContent], { type: "text/csv" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
@@ -228,7 +228,7 @@ async function autoDownloadNextPages() {
   let allDomains = htmls.flatMap(extractDomainsFromHtml);
   allDomains = Array.from(new Set(allDomains));
   if (allDomains.length && autoDownload.value) {
-    const csvContent = "domain\n" + allDomains.join("\n");
+    const csvContent = allDomains.join("\n");
     const blob = new Blob([csvContent], { type: "text/csv" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
