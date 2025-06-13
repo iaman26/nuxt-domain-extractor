@@ -8,38 +8,46 @@
         alt="Domain Illustration"
       />
       <h1 class="title">Domain Extractor</h1>
-      <form class="url-form animated" @submit.prevent="handleSubmit">
+      <input
+        v-model="url"
+        @change="onUrlChange"
+        type="url"
+        class="url-input"
+        placeholder="Nhập URL..."
+        required
+        style="margin-bottom: 16px"
+      />
+      <div class="batch-input-group">
+        <label class="batch-label">
+          <span class="batch-icon">📄</span> Số trang gộp mỗi lần xuất CSV:
+        </label>
         <input
-          v-model="url"
-          type="url"
-          class="url-input"
-          placeholder="Nhập URL..."
-          required
+          type="number"
+          v-model.number="batchSize"
+          min="1"
+          max="50"
+          class="batch-input"
         />
-        <button type="submit" class="submit-btn">Gửi</button>
-      </form>
+      </div>
       <button
         v-if="store.data && !store.loading && !store.error"
-        @click="downloadCSV"
-        class="submit-btn fadein"
-        style="margin-top: 12px; width: 120px"
-      >
-        Tải CSV
-      </button>
-      <button
-        v-if="nextPageUrl"
-        @click="downloadNextPage"
+        @click="downloadNextBatch"
         class="submit-btn fadein"
         style="margin-top: 12px; width: 180px"
+        :disabled="isBatchLoading || autoDownload"
       >
-        Tải CSV trang tiếp
+        Tải CSV ({{ batchSize }} trang)
       </button>
       <label
-        v-if="nextPageUrl"
+        v-if="nextPageUrl && url"
         style="margin-top: 8px; display: block"
         class="fadein"
-        ><input type="checkbox" v-model="autoDownload" /> Tự động tải liên
-        tục</label
+        ><input
+          type="checkbox"
+          v-model="autoDownload"
+          :disabled="autoDownload && isBatchLoading"
+        />
+        Tự động tải liên tục</label
       >
       <button
         v-if="autoDownload"
@@ -49,6 +57,17 @@
       >
         Dừng tải
       </button>
+      <transition name="fade">
+        <div v-if="lastBatchEndUrl" class="last-url-group">
+          <label class="last-url-label">
+            <span class="last-url-icon">🔗</span> URL trang cuối cùng đã tải:
+          </label>
+          <div class="last-url-row">
+            <input :value="lastBatchEndUrl" readonly class="last-url-input" />
+            <button @click="copyLastUrl" class="last-url-copy">Copy</button>
+          </div>
+        </div>
+      </transition>
       <transition name="fade">
         <div v-if="store.loading" class="result loading">Đang tải...</div>
       </transition>
@@ -62,15 +81,66 @@
 </template>
 
 <script setup>
-import { ref, reactive } from "vue";
+import { ref, watch } from "vue";
 import { useUrlStore } from "./stores/useUrlStore";
 const url = ref("");
 const store = useUrlStore();
 const nextPageUrl = ref(null);
 const autoDownload = ref(false);
 let autoDownloadTimer = null;
+const isBatchLoading = ref(false);
+const lastBatchEndUrl = ref("");
+const batchSize = ref(1);
 
-async function handleSubmit() {
+const whitelist = [
+  ".uk.com",
+  ".uk.net",
+  ".us.com",
+  ".jpn.com",
+  ".in.net",
+  ".co.com",
+  ".eu.com",
+  ".de.com",
+  ".br.com",
+  ".ru.com",
+];
+
+function extractDomainsFromHtml(html) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, "text/html");
+  const links = Array.from(doc.querySelectorAll("a"));
+  const domains = links
+    .map((a) => {
+      try {
+        const href = a.getAttribute("href");
+        if (!href) return null;
+        const u = new URL(href);
+        return u.hostname;
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  return domains.filter((domain) =>
+    whitelist.some((ext) => domain.endsWith(ext))
+  );
+}
+
+function getNextPageUrlFromHtml(html) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, "text/html");
+  const links = Array.from(doc.querySelectorAll("a"));
+  for (const a of links) {
+    if (a.textContent.trim().toLowerCase().includes("next page")) {
+      return a.getAttribute("href");
+    }
+  }
+  return null;
+}
+
+async function onUrlChange() {
+  if (!url.value) return;
+  autoDownload.value = false;
   await fetchNextPage(url.value);
 }
 
@@ -79,42 +149,120 @@ async function fetchNextPage(inputUrl) {
   const res = await fetch(`/api/proxy?url=${encodeURIComponent(cleanUrl)}`);
   const data = await res.json();
   store.data = data.html;
-  nextPageUrl.value = data.nextPageUrl ? "@" + data.nextPageUrl : null;
+  const next = data.nextPageUrl;
+  nextPageUrl.value = next
+    ? next.startsWith("http")
+      ? next
+      : new URL(next, cleanUrl).href
+    : null;
 }
 
-async function downloadCSV(targetUrl) {
-  let urlToUse = typeof targetUrl === "string" ? targetUrl : url.value;
-  if (!urlToUse) return;
-  const cleanUrl = urlToUse.startsWith("@") ? urlToUse.slice(1) : urlToUse;
-  const res = await fetch(
-    `/api/proxy?url=${encodeURIComponent(cleanUrl)}&csv=1`
-  );
-  const blob = await res.blob();
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = "domains.csv";
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
+async function downloadNextBatch() {
+  if (isBatchLoading.value || !nextPageUrl.value || autoDownload.value) return;
+  isBatchLoading.value = true;
+  let batch = 0;
+  let htmls = [store.data];
+  let next = nextPageUrl.value;
+  let lastUrl = url.value.startsWith("@") ? url.value.slice(1) : url.value;
+  let lastFetchedUrl = lastUrl;
+  while (next && batch < batchSize.value - 1) {
+    const nextUrl = next.startsWith("http")
+      ? next
+      : new URL(next, lastUrl).href;
+    const res = await fetch(`/api/proxy?url=${encodeURIComponent(nextUrl)}`);
+    const data = await res.json();
+    htmls.push(data.html);
+    lastFetchedUrl = nextUrl;
+    next = data.nextPageUrl;
+    lastUrl = nextUrl;
+    batch++;
+  }
+  lastBatchEndUrl.value = lastFetchedUrl;
+  let allDomains = htmls.flatMap(extractDomainsFromHtml);
+  allDomains = Array.from(new Set(allDomains));
+  if (allDomains.length) {
+    const csvContent = "domain\n" + allDomains.join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "domains.csv";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+  nextPageUrl.value = next
+    ? next.startsWith("http")
+      ? next
+      : new URL(next, lastUrl).href
+    : null;
+  isBatchLoading.value = false;
 }
+
+async function autoDownloadNextPages() {
+  if (isBatchLoading.value || !autoDownload.value || !nextPageUrl.value) return;
+  isBatchLoading.value = true;
+  let batch = 0;
+  let htmls = [store.data];
+  let next = nextPageUrl.value;
+  let lastUrl = url.value.startsWith("@") ? url.value.slice(1) : url.value;
+  let lastFetchedUrl = lastUrl;
+  while (next && batch < batchSize.value - 1) {
+    if (!autoDownload.value) {
+      store.data = null;
+      nextPageUrl.value = null;
+      url.value = "";
+      break;
+    }
+    const nextUrl = next.startsWith("http")
+      ? next
+      : new URL(next, lastUrl).href;
+    const res = await fetch(`/api/proxy?url=${encodeURIComponent(nextUrl)}`);
+    const data = await res.json();
+    htmls.push(data.html);
+    lastFetchedUrl = nextUrl;
+    next = data.nextPageUrl;
+    lastUrl = nextUrl;
+    batch++;
+  }
+  lastBatchEndUrl.value = lastFetchedUrl;
+  let allDomains = htmls.flatMap(extractDomainsFromHtml);
+  allDomains = Array.from(new Set(allDomains));
+  if (allDomains.length && autoDownload.value) {
+    const csvContent = "domain\n" + allDomains.join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "domains.csv";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+  nextPageUrl.value = next
+    ? next.startsWith("http")
+      ? next
+      : new URL(next, lastUrl).href
+    : null;
+  isBatchLoading.value = false;
+  if (autoDownload.value && nextPageUrl.value) {
+    autoDownloadTimer = setTimeout(autoDownloadNextPages, 1000);
+  }
+}
+
+watch(autoDownload, (val) => {
+  if (val && nextPageUrl.value) autoDownloadNextPages();
+  else stopAutoDownload();
+});
 
 function stopAutoDownload() {
   autoDownload.value = false;
-  if (autoDownloadTimer) {
-    clearTimeout(autoDownloadTimer);
-    autoDownloadTimer = null;
-  }
+  store.data = null;
+  nextPageUrl.value = null;
+  url.value = "";
 }
 
-async function downloadNextPage() {
-  if (!nextPageUrl.value) return;
-  await downloadCSV(nextPageUrl.value);
-  if (autoDownload.value) {
-    await fetchNextPage(nextPageUrl.value);
-    if (nextPageUrl.value) {
-      autoDownloadTimer = setTimeout(downloadNextPage, 1000);
-    }
-  }
+function copyLastUrl() {
+  if (!lastBatchEndUrl.value) return;
+  navigator.clipboard.writeText(lastBatchEndUrl.value);
 }
 </script>
 
@@ -175,19 +323,6 @@ body {
   letter-spacing: 1px;
   text-shadow: 0 2px 8px #e0e7ff;
   animation: fadeIn 1.2s;
-}
-.url-form {
-  display: flex;
-  flex-direction: row;
-  gap: 10px;
-  background: #f4f7ff;
-  padding: 18px 12px;
-  border-radius: 14px;
-  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.07);
-  width: 100%;
-  max-width: 420px;
-  margin-bottom: 10px;
-  animation: fadeInUp 1s;
 }
 .url-input {
   flex: 1;
@@ -256,15 +391,101 @@ body {
 .animated {
   animation: fadeInUp 1s;
 }
+.batch-input-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  background: #f4f7ff;
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 18px;
+  box-shadow: 0 1px 6px rgba(99, 102, 241, 0.07);
+  max-width: 340px;
+  width: 100%;
+}
+.batch-label {
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: #2d3a4a;
+  display: flex;
+  align-items: center;
+  font-size: 1.08rem;
+}
+.batch-icon {
+  margin-right: 6px;
+  font-size: 1.2em;
+}
+.batch-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1.5px solid #b6c6e3;
+  font-size: 1.08rem;
+  margin-top: 2px;
+  background: #fff;
+  transition: border 0.2s;
+}
+.batch-input:focus {
+  border: 1.5px solid #6366f1;
+}
+.last-url-group {
+  margin-top: 22px;
+  background: #f4f7ff;
+  border-radius: 12px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 6px rgba(99, 102, 241, 0.07);
+  max-width: 540px;
+  width: 100%;
+}
+.last-url-label {
+  font-weight: 600;
+  color: #2d3a4a;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  font-size: 1.08rem;
+}
+.last-url-icon {
+  margin-right: 6px;
+  font-size: 1.2em;
+}
+.last-url-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+}
+.last-url-input {
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1.5px solid #b6c6e3;
+  font-size: 1.02rem;
+  background: #fff;
+  color: #222;
+}
+.last-url-copy {
+  padding: 10px 18px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #6366f1 0%, #38bdf8 100%);
+  color: #fff;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  font-size: 1.02rem;
+  transition: background 0.2s, transform 0.15s;
+}
+.last-url-copy:hover {
+  background: linear-gradient(90deg, #38bdf8 0%, #6366f1 100%);
+  transform: translateY(-2px) scale(1.04);
+}
 @media (max-width: 600px) {
   .main-content {
     padding: 18px 4px 16px 4px;
     max-width: 98vw;
   }
-  .url-form {
-    flex-direction: column;
-    gap: 12px;
-    padding: 12px 4px;
+  .url-input {
+    width: 100%;
   }
   .submit-btn {
     width: 100%;
@@ -272,6 +493,18 @@ body {
   }
   .result {
     max-width: 98vw;
+  }
+  .batch-input-group,
+  .last-url-group {
+    max-width: 98vw;
+    padding: 10px 4px;
+  }
+  .last-url-row {
+    flex-direction: column;
+    gap: 6px;
+  }
+  .last-url-copy {
+    width: 100%;
   }
 }
 @keyframes fadeIn {
