@@ -12,19 +12,37 @@ export const useUrlStore = defineStore('url', () => {
     data.value = null
     error.value = null
     loading.value = true
+    
     try {
       // Loại bỏ ký tự @ nếu có ở đầu
       const cleanUrl = inputUrl.startsWith('@') ? inputUrl.slice(1) : inputUrl
-      const response = await fetch(`/api/proxy?url=${encodeURIComponent(cleanUrl)}`)
-      const text = await response.text()
-      // Nếu trả về JSON lỗi
-      try {
-        const json = JSON.parse(text)
-        if (json.error) throw new Error(json.error)
-      } catch { /* Không phải JSON lỗi */ }
-      data.value = text
+      
+      const response = await fetch(`/api/proxy?url=${encodeURIComponent(cleanUrl)}`, {
+        headers: {
+          'Accept': 'application/json, text/plain, */*',
+        }
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+
+      const contentType = response.headers.get('content-type')
+      let responseData
+
+      if (contentType && contentType.includes('application/json')) {
+        responseData = await response.json()
+        if (responseData.error) {
+          throw new Error(responseData.error)
+        }
+        data.value = responseData.html
+      } else {
+        responseData = await response.text()
+        data.value = responseData
+      }
     } catch (err) {
-      error.value = err.message
+      console.error('Error fetching URL:', err)
+      error.value = `Error: ${err.message}`
     } finally {
       loading.value = false
     }

@@ -17,73 +17,76 @@
         required
         style="margin-bottom: 16px"
       />
-      <div class="batch-input-group">
-        <label class="batch-label">
-          <span class="batch-icon">📄</span> Số trang gộp mỗi lần xuất CSV:
+      <div class="page-input-group">
+        <label class="page-label">
+          https://www.example3.com/domains?page=
         </label>
         <input
           type="number"
-          v-model.number="batchSize"
+          v-model.number="pageNumber"
           min="1"
-          max="50"
-          class="batch-input"
+          max="5000"
+          class="page-input"
+          placeholder="1"
+          style="margin-bottom: 16px"
         />
       </div>
       <button
-        v-if="store.data && !store.loading && !store.error"
-        @click="downloadNextBatch"
+        @click="startPageExtraction"
         class="submit-btn fadein"
-        style="margin-top: 12px; width: 180px"
-        :disabled="isBatchLoading || autoDownload"
+        style="margin-top: 12px; width: 200px"
+        :disabled="isPageExtracting"
       >
-        Tải CSV ({{ batchSize }} trang)
+        {{ isPageExtracting ? "Đang tải..." : "Bắt đầu tải domain" }}
       </button>
       <label
-        v-if="nextPageUrl && url"
+        v-if="isPageExtracting"
         style="margin-top: 8px; display: block"
         class="fadein"
         ><input
           type="checkbox"
-          v-model="autoDownload"
-          :disabled="autoDownload && isBatchLoading"
+          v-model="autoPageExtract"
+          :disabled="!isPageExtracting"
         />
         Tự động tải liên tục</label
       >
       <button
-        v-if="autoDownload"
-        @click="stopAutoDownload"
+        v-if="isPageExtracting"
+        @click="stopPageExtraction"
         class="submit-btn stop-btn fadein"
         style="margin-top: 8px; width: 120px"
       >
         Dừng tải
       </button>
       <div
-        v-if="isBatchLoading || batchMessage || currentCallingUrl"
+        v-if="isPageExtracting || pageExtractMessage || currentPageUrl"
         class="status-panel fadein"
       >
-        <div v-if="isBatchLoading" class="status-section">
+        <div v-if="isPageExtracting" class="status-section">
           <div class="status-icon">🔄</div>
           <div class="status-content">
-            <div class="status-title">Tiến độ</div>
+            <div class="status-title">Tiến độ tải trang</div>
             <div class="status-detail">
-              Đang tải batch {{ currentBatchNumber }}/{{ batchSize }}
+              Đang tải trang {{ currentPage }}/{{ totalPages }} ({{
+                Math.round((currentPage / totalPages) * 100)
+              }}%)
             </div>
           </div>
         </div>
-        <div v-if="currentCallingUrl" class="status-section">
+        <div v-if="currentPageUrl" class="status-section">
           <div class="status-icon">🔗</div>
           <div class="status-content">
             <div class="status-title">URL đang tải</div>
-            <div class="status-detail url-text">{{ currentCallingUrl }}</div>
+            <div class="status-detail url-text">{{ currentPageUrl }}</div>
           </div>
         </div>
-        <div v-if="batchMessage" class="status-section">
+        <div v-if="pageExtractMessage" class="status-section">
           <div class="status-icon">
-            {{ batchMessage.includes("thành công") ? "✅" : "ℹ️" }}
+            {{ pageExtractMessage.includes("thành công") ? "✅" : "ℹ️" }}
           </div>
           <div class="status-content">
             <div class="status-title">Kết quả</div>
-            <div class="status-detail">{{ batchMessage }}</div>
+            <div class="status-detail">{{ pageExtractMessage }}</div>
           </div>
         </div>
       </div>
@@ -130,10 +133,17 @@ const lastBatchEndUrl = ref("");
 if (process.client) {
   lastBatchEndUrl.value = localStorage.getItem("lastBatchEndUrl") || "";
 }
-const batchSize = ref(1);
+const batchSize = ref(50);
 const currentBatchNumber = ref(0);
 const batchMessage = ref("");
 const currentCallingUrl = ref("");
+const pageNumber = ref(1);
+const autoPageExtract = ref(false);
+const isPageExtracting = ref(false);
+const currentPage = ref(1);
+const totalPages = ref(5000);
+const pageExtractMessage = ref("");
+const currentPageUrl = ref("");
 
 const whitelist = [
   ".uk.com",
@@ -146,6 +156,12 @@ const whitelist = [
   ".de.com",
   ".br.com",
   ".ru.com",
+  ".sa.com",
+  ".com.co",
+  ".cn.com",
+  ".ae.org",
+  ".co.uk",
+  ".org.uk",
 ];
 
 function extractDomainsFromHtml(html) {
@@ -344,6 +360,174 @@ function clearLastUrl() {
 function copyLastUrl() {
   if (!lastBatchEndUrl.value) return;
   navigator.clipboard.writeText(lastBatchEndUrl.value);
+}
+
+async function startPageExtraction() {
+  if (isPageExtracting.value) return;
+  isPageExtracting.value = true;
+  currentPage.value = pageNumber.value;
+  pageExtractMessage.value = "";
+  currentPageUrl.value = "";
+
+  const batchSize = 50; // Gộp 50 trang thành 1 file
+  let startPage = pageNumber.value;
+
+  while (startPage <= 5000 && isPageExtracting.value) {
+    const endPage = Math.min(startPage + batchSize - 1, 5000);
+    pageExtractMessage.value = `Đang tải lần lượt ${batchSize} trang từ ${startPage} đến ${endPage}...`;
+    console.log(`Bắt đầu tải batch: ${startPage} - ${endPage}`);
+
+    let allDomains = [];
+
+    // Chạy lần lượt từng trang
+    for (let page = startPage; page <= endPage; page++) {
+      if (!isPageExtracting.value) break;
+
+      const pageUrl = `https://www.example3.com/domains?page=${page}`;
+      currentPageUrl.value = pageUrl;
+      currentPage.value = page;
+
+      try {
+        console.log(`Đang tải trang ${page}: ${pageUrl}`);
+
+        // Use proxy endpoint instead of direct API call
+        const res = await fetch(
+          `/api/proxy?url=${encodeURIComponent(pageUrl)}`,
+          {
+            headers: {
+              Accept: "application/json, text/plain, */*",
+            },
+          }
+        );
+
+        if (!res.ok) {
+          throw new Error(`HTTP error! status: ${res.status}`);
+        }
+
+        const data = await res.json();
+        const html = data.html;
+
+        console.log(`Trang ${page} response length:`, html.length);
+
+        if (html) {
+          const domains = extractDomainsFromPageHtml(html);
+          console.log(
+            `Trang ${page} tìm được ${domains.length} domain:`,
+            domains
+          );
+          allDomains = allDomains.concat(domains);
+        } else {
+          console.log(`Trang ${page} không có HTML data`);
+        }
+      } catch (error) {
+        console.error(`Lỗi khi tải trang ${page}:`, error);
+      }
+
+      // Delay nhỏ giữa các trang
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+
+    console.log(`Tổng số domain tìm được trong batch: ${allDomains.length}`);
+
+    // Loại bỏ domain trùng lặp và xuất CSV
+    const uniqueDomains = Array.from(new Set(allDomains));
+    console.log(`Số domain unique sau khi lọc: ${uniqueDomains.length}`);
+
+    if (uniqueDomains.length > 0) {
+      const csvContent = uniqueDomains.join("\n");
+      const blob = new Blob([csvContent], { type: "text/csv" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `domains_page_${startPage}_to_${endPage}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      pageExtractMessage.value = `Đã tìm thấy ${uniqueDomains.length} domain và xuất file CSV thành công (trang ${startPage} - ${endPage})`;
+      console.log(
+        `Đã xuất file CSV: domains_page_${startPage}_to_${endPage}.csv`
+      );
+    } else {
+      pageExtractMessage.value = `Không tìm thấy domain nào trong trang ${startPage} - ${endPage}`;
+      console.log(
+        `Không có domain nào được tìm thấy trong batch ${startPage} - ${endPage}`
+      );
+    }
+
+    startPage += batchSize;
+
+    // Delay nhỏ giữa các batch
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  isPageExtracting.value = false;
+  currentPageUrl.value = "";
+  pageExtractMessage.value = "Hoàn thành tải tất cả trang!";
+}
+
+function extractDomainsFromPageHtml(html) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, "text/html");
+  const links = Array.from(doc.querySelectorAll("a[href^='/domain/']"));
+  const domains = links
+    .map((a) => {
+      try {
+        const href = a.getAttribute("href");
+        if (!href) return null;
+        // Lấy domain từ href="/domain/ytport.com" -> ytport.com
+        const domain = href.replace("/domain/", "");
+        return domain;
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .filter((domain) => whitelist.some((ext) => domain.endsWith(ext))); // Lọc theo whitelist
+  return domains;
+}
+
+async function stopPageExtraction() {
+  autoPageExtract.value = false;
+  isPageExtracting.value = false;
+  store.data = null;
+  nextPageUrl.value = null;
+  url.value = "";
+}
+
+async function testApiProxy() {
+  console.log("Testing proxy API call...");
+  try {
+    const testUrl = "https://www.example3.com/domains?page=1";
+    console.log("Testing URL:", testUrl);
+
+    const res = await fetch(`/api/proxy?url=${encodeURIComponent(testUrl)}`, {
+      headers: {
+        Accept: "application/json, text/plain, */*",
+      },
+    });
+
+    if (!res.ok) {
+      throw new Error(`HTTP error! status: ${res.status}`);
+    }
+
+    const data = await res.json();
+    const html = data.html;
+
+    console.log("API Response length:", html.length);
+
+    if (html) {
+      const domains = extractDomainsFromPageHtml(html);
+      console.log("Extracted domains:", domains);
+      alert(
+        `Test thành công! Tìm thấy ${domains.length} domain từ trang test.`
+      );
+    } else {
+      console.log("No HTML data in response");
+      alert("Test thất bại: Không có HTML data trong response");
+    }
+  } catch (error) {
+    console.error("Test API error:", error);
+    alert(`Test thất bại: ${error.message}`);
+  }
 }
 </script>
 
@@ -709,5 +893,39 @@ body {
     font-size: 0.9rem;
     padding: 3px 6px;
   }
+}
+.page-input-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  background: #f4f7ff;
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 18px;
+  box-shadow: 0 1px 6px rgba(99, 102, 241, 0.07);
+  max-width: 340px;
+  width: 100%;
+}
+.page-label {
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: #2d3a4a;
+  display: flex;
+  align-items: center;
+  font-size: 1.08rem;
+  font-family: monospace;
+}
+.page-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1.5px solid #b6c6e3;
+  font-size: 1.08rem;
+  margin-top: 2px;
+  background: #fff;
+  transition: border 0.2s;
+}
+.page-input:focus {
+  border: 1.5px solid #6366f1;
 }
 </style>
