@@ -116,6 +116,49 @@
           Lỗi: {{ store.error }}
         </div>
       </transition>
+      <div class="extract-link-box" style="margin-top: 24px; width: 100%">
+        <label style="font-weight: 600; margin-bottom: 6px; display: block"
+          >Nhập HTML chứa các thẻ a để lấy danh sách link:</label
+        >
+        <textarea
+          v-model="htmlInput"
+          rows="5"
+          class="url-input"
+          style="width: 100%; margin-bottom: 8px"
+        ></textarea>
+        <button
+          @click="extractLinksFromHtmlInput"
+          class="submit-btn"
+          style="width: 180px; margin-bottom: 8px"
+        >
+          Lấy danh sách link
+        </button>
+        <button
+          v-if="extractedLinks.length"
+          @click="fetchAllLinksAndExtractDomainsInBatches"
+          class="submit-btn"
+          style="
+            width: 320px;
+            margin-left: 8px;
+            margin-bottom: 8px;
+            background: linear-gradient(90deg, #059669 0%, #10b981 100%);
+          "
+        >
+          Lấy domain từ từng batch 50 link & Xuất nhiều file CSV
+        </button>
+        <div v-if="extractedLinks.length" style="margin-top: 10px">
+          <label style="font-weight: 600; margin-bottom: 4px; display: block"
+            >Danh sách link (có thể copy):</label
+          >
+          <textarea
+            :value="extractedLinks.join('\n')"
+            rows="6"
+            readonly
+            class="url-input"
+            style="width: 100%"
+          ></textarea>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -133,7 +176,7 @@ const lastBatchEndUrl = ref("");
 if (process.client) {
   lastBatchEndUrl.value = localStorage.getItem("lastBatchEndUrl") || "";
 }
-const batchSize = ref(50);
+const batchSize = ref(5);
 const currentBatchNumber = ref(0);
 const batchMessage = ref("");
 const currentCallingUrl = ref("");
@@ -144,6 +187,10 @@ const currentPage = ref(1);
 const totalPages = ref(5000);
 const pageExtractMessage = ref("");
 const currentPageUrl = ref("");
+const htmlInput = ref("");
+const extractedLinks = ref([]);
+const lockedDomains = ref([]);
+const isLocking = ref(false);
 
 const whitelist = [
   ".uk.com",
@@ -528,6 +575,67 @@ async function testApiProxy() {
     console.error("Test API error:", error);
     alert(`Test thất bại: ${error.message}`);
   }
+}
+
+function extractLinksFromHtmlInput() {
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(htmlInput.value, "text/html");
+    const links = Array.from(doc.querySelectorAll("a"));
+    extractedLinks.value = links
+      .map((a) => a.getAttribute("href"))
+      .filter(Boolean);
+  } catch (e) {
+    extractedLinks.value = [];
+  }
+}
+
+async function fetchAllLinksAndExtractDomainsInBatches() {
+  if (!extractedLinks.value.length) return;
+  const batchSize = 5;
+  let batchIndex = 0;
+  const totalBatches = Math.ceil(extractedLinks.value.length / batchSize);
+  for (let i = 0; i < extractedLinks.value.length; i += batchSize) {
+    const batchLinks = extractedLinks.value.slice(i, i + batchSize);
+    // Fetch song song tất cả link trong batch
+    const fetchHtml = async (url) => {
+      try {
+        const res = await fetch(`/api/proxy?url=${encodeURIComponent(url)}`);
+        if (!res.ok) return null;
+        const data = await res.json();
+        return data.html;
+      } catch {
+        return null;
+      }
+    };
+    const htmls = await Promise.allSettled(batchLinks.map(fetchHtml));
+    // Extract domain từ từng HTML
+    let allDomains = [];
+    for (const result of htmls) {
+      if (result.status === "fulfilled" && result.value) {
+        const html = result.value;
+        // Sử dụng extractDomainsFromPageHtml để lấy domain từ HTML
+        const domains = extractDomainsFromPageHtml(html);
+        allDomains = allDomains.concat(domains);
+      }
+    }
+    // Lọc trùng
+    const uniqueDomains = Array.from(new Set(allDomains));
+    if (uniqueDomains.length) {
+      const csvContent = uniqueDomains.join("\n");
+      const blob = new Blob([csvContent], { type: "text/csv" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `domains_batch_${batchIndex + 1}_of_${totalBatches}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+    batchIndex++;
+    // Có thể thêm delay nhỏ giữa các batch nếu cần
+    // await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  alert("Đã xuất xong tất cả file CSV cho các batch!");
 }
 </script>
 
