@@ -209,6 +209,7 @@ const whitelist = [
   ".ae.org",
   ".co.uk",
   ".org.uk",
+  ".co.com",
 ];
 
 function extractDomainsFromHtml(html) {
